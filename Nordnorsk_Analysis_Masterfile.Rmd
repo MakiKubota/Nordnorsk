@@ -1,0 +1,600 @@
+---
+title: "Nordnorsk_ERP data analysis"
+output: html_notebook
+---
+
+#### Here we will analyze the results of the Nordnorsk behavioural data  
+First, we will do some data wrangling to clean up the data. 
+
+```{r}
+#First we will load packages
+library(tidyverse)
+library(lme4)
+library(afex)
+library(ggplot2)
+library(sjmisc)
+library(dplyr)
+library(cocor)
+library(readxl)
+library(emmeans)
+library(MuMIn)
+library(DHARMa)
+library(ggpubr)
+library(sjPlot)
+library(LMERConvenienceFunctions)
+library(performance)
+library(glmmTMB)
+library(TMB)
+library(here)
+library(stringr)
+```
+
+#### Here we will analyze the results of the Nordnorsk ERP data 
+First, we will do some data wrangling to clean up the data. 
+
+```{r}
+setwd("~/Dropbox/Postdoc-UiT/NordNorsk/Data Analysis")
+#read data 
+data_erp<-read_excel("nordnorskERP.xlsx")#ERP data
+lsbq_erp<-read_excel("lsbq_data_S122.xlsx")#LSBQ composite score background data 
+group_info<-read_excel("nordnorsk_groups_S122.xlsx") #Native speaker status data 
+
+#merge two data sets 
+erp_all1<-merge(group_info, lsbq_erp, by = "Subject")
+erp_all<-merge(erp_all1, data_erp, by = "Subject")
+
+#rename variables
+erp_all_sep<-erp_all%>%
+  mutate(Condition = dplyr::recode(Condition,NumGr ="NUM_nonagr", NumUg = "NUM_agr", GenGr = "GEN_agr", GenUg = "GEN_nonagr"))%>%
+  dplyr::rename(Agreement = Condition)%>%
+  dplyr::rename(Amplitude = Voltage)
+
+#for combined data analysis 
+erp_com<-erp_all%>%
+  mutate(Agreement = Condition)%>%
+  mutate(Num_Gen = Condition)%>%
+  mutate(Agreement = dplyr::recode(Agreement,NumGr ="non-agreement", NumUg = "agreement", GenGr = "agreement", GenUg = "non-agreement"))%>%
+  mutate(Num_Gen = dplyr::recode(Num_Gen,NumGr ="number", NumUg = "number", GenGr = "gender", GenUg = "gender"))%>%
+  dplyr::rename(Amplitude = Voltage)
+
+#create data frame by filtering out P from Trondheim and Bergen 
+filterdata<- c("S86","S94","S97","S121")
+
+#filter Trondheim and Bergen data in the combined file 
+erp_com<-erp_com%>%
+  filter(!Subject%in%filterdata)
+
+length(unique(erp_com$Subject))# 105 
+
+
+####### This analysis is for excluding those who have only 50% retainment of EEG data####### 
+#create data frame by filtering out P with missing data 
+#missing_data<- c("P06","S01" ,"S05", "S07", "S08", "S09", "S11", "S14","S16","S18", "S19", "S20", "S21", "S25", "S26", "S28", "S30", "S31", "S32", "S37", "S38", "S39", "S40", "S41", "S42", "S45", "S50", "S51", "S52", "S55", "S57", "S58", "S61", "S63", "S68", "S70")#-33 participants
+
+#filter missing data in the combined file 
+#erp_com<-erp_com%>%
+#filter(!Subject%in%missing_data)
+
+
+```
+
+## Gender and Number ERP analysis 
+We will now run lmer with Num_Gen (Gender,Number), Agreement (agreement,non-agreement), Composite score on the LSBQ (higher values indicate more exposure to NN), Group (non-native NN, native NN)
+```{r}
+#let's first analyze P600 effect for both by filtering for P6 window 
+erp_all_2<-erp_com%>%
+  filter(Window == "P6")%>%
+  filter(Num_Gen == "number"|Num_Gen == "gender")%>%
+  mutate(composite_c = scale(composite))%>%
+  filter(Amplitude > -10)#remove weird clustering of data coming from 3 participants 
+
+#First we will run a lmer model to do some model diagnostic 
+c1<-lmer(Amplitude~Agreement*Num_Gen*composite_c*Group+ROI+(1|Electrode)+(1|Subject),data=erp_all_2)
+summary(c1)
+#model diagnostic
+sjPlot::plot_model(c1, type='diag')#some outliers need to be removed but overall the model assumptions look good 
+#remove outliers 
+erp_all_3<-romr.fnc(c1, erp_all_2, trim = 3)$data#111 data points are removed 
+
+#run LRT with afex package with the new outlier removed data  
+library(afex)
+c2<-mixed(Amplitude~Agreement*Num_Gen*composite_c*Group+ROI+(1|Electrode)+(Agreement+Num_Gen|Subject),data=erp_all_3,method = "LRT")
+c2#ANOVA table
+summary(c2)#summary output 
+
+
+library(emmeans)
+#post-hoc comparisons to see the effect of Agreement differences between Number and Gender
+con2<-emmeans(c2, ~ Agreement*Num_Gen, test = "Tukey")
+contrast(con2, interaction ="pairwise")
+
+#post-hoc comparisons to see the effect of Agreement on Number and Gender separately
+con1<-emmeans(c2, ~ Agreement|Num_Gen, test = "Tukey")
+contrast(con1, interaction ="pairwise")
+
+#post-hoc comparisons to see the effect of Agreement and Group on Number and Gender separately
+con3<-emmeans(c2, ~ Agreement*Group|Num_Gen, test = "Tukey")
+contrast(con3, interaction ="pairwise")
+
+
+######VISUALIZATION######### 
+#run model with lmer for the sake of visualization (since c1 model run with the afex package is not compatible with sjPlot)
+c3<-lmer(Amplitude~Agreement*Num_Gen*composite_c*Group+ROI+(1|Electrode)+(Agreement+Num_Gen|Subject),data=erp_all_3)
+summary(c3)
+#plot model for the 2 way-interaction
+sjPlot::plot_model(c3, type = "pred", terms = c( "Num_Gen","Agreement"))
+#plot model for the 3 way-interaction
+sjPlot::plot_model(c3, type = "pred", terms = c( "Num_Gen","Agreement","Group"))
+sjPlot::plot_model(c3, type = "pred", terms = c("composite_c", "Agreement", "Num_Gen"))
+#plot model for the 4 way-interaction with raw data points 
+sjPlot::plot_model(c3, type = "pred", terms = c("composite_c", "Agreement", "Group","Num_Gen"),show.data = TRUE, jitter = 0.1)
+#plot model for the 4 way-interaction without raw data points
+sjPlot::plot_model(c3, type = "pred", terms = c("composite_c", "Agreement", "Group","Num_Gen"))
+
+
+```
+
+## Gender ERP analysis 
+We will now run lmer Agreement (agreement,non-agreement), Composite score on the LSBQ (higher values indicate more exposure to NN), Group (non-native NN, native NN) as fixed factors as well as their interactions for Gender only
+```{r}
+#let's first analyze P600 effect for both by filtering for P6 window for gender
+erp_all_gen<-erp_com%>%
+  filter(Window == "P6")%>%
+  filter(Num_Gen == "gender")%>%
+  mutate(composite_c = scale(composite))
+  #filter(Amplitude > -10)#remove weird clustering of data coming from 3 participants 
+
+#First we will run a lmer model to do some model diagnostic 
+g1<-lmer(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(1|Subject),data=erp_all_gen)
+summary(g1)
+
+#model diagnostic
+sjPlot::plot_model(g1, type='diag')#some outliers need to be removed but overall the model assumptions look good 
+#remove outliers 
+erp_all_gen_2<-romr.fnc(g1, erp_all_gen, trim = 3)$data#37 data points are removed 
+
+#run LRT with afex package with the new outlier removed data  
+library(afex)
+g2<-mixed(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(Agreement|Subject),data=erp_all_gen_2,method = "LRT")
+g2#ANOVA table
+summary(g2)#summary output 
+
+
+###VISUALZATION###
+g3<-lmer(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(Agreement|Subject),data=erp_all_gen)
+summary(g3)
+sjPlot::plot_model(g3, type = "pred", terms = c("composite_c", "Agreement", "Group"))
+sjPlot::plot_model(g3, type = "pred", terms = c("Agreement", "Group"))
+sjPlot::plot_model(g3, type = "pred", terms = c("composite_c", "Agreement"))
+```
+
+## Number ERP analysis 
+We will now run lmer Agreement (agreement,non-agreement), Composite score on the LSBQ (higher values indicate more exposure to NN), Group (non-native NN, native NN) as fixed factors as well as their interactions for Number only
+```{r}
+#let's first analyze P600 effect for both by filtering for P6 window for number
+erp_all_num<-erp_com%>%
+  filter(Window == "P6")%>%
+  filter(Num_Gen == "number")%>%
+  mutate(composite_c = scale(composite))%>%
+  filter(Amplitude > -10)#remove weird clustering of data coming from 3 participants 
+
+#First we will run a lmer model to do some model diagnostic 
+n1<-lmer(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(1|Subject),data=erp_all_num)
+summary(n1)
+
+#model diagnostic
+sjPlot::plot_model(n1, type='diag')#some outliers need to be removed but overall the model assumptions look good 
+#remove outliers 
+erp_all_num_2<-romr.fnc(n1, erp_all_num, trim = 3)$data#52 data points are removed 
+
+#run LRT with afex package with the new outlier removed data  
+library(afex)
+n2<-mixed(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(1|Subject),data=erp_all_num,method = "LRT")
+n2#ANOVA table
+summary(n2)#summary output 
+
+
+###VISUALZATION###
+n3<-lmer(Amplitude~Agreement*composite_c*Group+ROI+(1|Electrode)+(1|Subject),data=erp_all_num)
+summary(n3)
+sjPlot::plot_model(n3, type = "pred", terms = c("composite_c", "Agreement", "Group"))
+
+```
+
+
+### Here, will check particpants who had larger amplitutde for number agreement### 
+
+```{r}
+recall_p<-erp_all_2%>%
+  filter(Num_Gen == "number")%>%
+  dplyr::group_by(Subject, Agreement, Group, composite)%>%
+  dplyr::summarize(meanAmp = mean(as.numeric(Amplitude)))%>%
+  spread(Agreement, meanAmp)%>%
+  mutate(P600 = agreement - `non-agreement`)%>%
+  arrange(P600)%>%
+  filter(P600 > 0)%>%
+  arrange(composite)
+  #group_by(Group)%>%
+  #tally()
+
+#write.csv(recall_p, "follow-up_bokmål_subjects.csv")
+
+```
+
+
+#### Here we will analyze the results of the Nordnorsk behavioural data 
+
+```{r}
+
+#read csv
+behav_all<-read_csv("behavioural_data_all.csv")
+
+#filter Trondheim and Bergen data in the combined file 
+behav_all<-behav_all%>%
+  filter(!Subject%in%filterdata)
+
+length(unique(behav_all$Subject))#four data missing due to technical bluetooth problems for behavioural data 
+
+#subset data to gender and number 
+behav_sub<-behav_all%>%
+  filter(Condition == "gender_g"  | Condition == "gender_u" | Condition == "num_g"| Condition == "num_u")%>%
+  mutate(Agreement = recode(Condition, gender_g = "agreement", gender_u = "non-agreement",num_g = "non-agreement", num_u = "agreement"))%>%
+  mutate(Num_Gen = recode(Condition, gender_g = "gender", gender_u = "gender",num_g = "number", num_u = "number"))%>%
+  mutate(composite_c = scale(composite))%>%
+  mutate_if(is.character, as.factor)
+
+##Descriptive Stats##
+
+#summarize per condition RT
+RT_behav<-behav_sub%>%
+  mutate(RT =as.numeric(RT))%>%
+  dplyr::group_by(Num_Gen, Agreement)%>%
+  dplyr::summarise(meanRT = round(mean (RT), digits = 0)/10, sdRT = round (sd (RT), digits = 0)/10, seRT = round(sd(RT) / sqrt(length(RT)), digits = 0)/10)
+
+behav_sub%>%
+  mutate(RT =as.numeric(RT))%>%
+   dplyr::group_by(Num_Gen, Agreement)%>%
+  dplyr::summarise(meanRT = mean (RT), sdRT = sd (RT),seRT = sd(RT) / sqrt(length(RT)))
+
+
+#summarize per condition Accuracy
+Accuracy_behav<-behav_sub%>%
+  drop_na()%>%
+  dplyr::group_by(Num_Gen, Agreement)%>%
+  dplyr::summarise(meanAccuracy = round(mean (Accuracy), digits = 2), sdAccuracy = round(sd (Accuracy), digits = 2) ,seAccuracy = round (sd(Accuracy) / sqrt(length(Accuracy)), digits = 2))
+
+behav_sub%>%
+  group_by(Num_Gen, Agreement)%>%
+  drop_na()%>%
+  dplyr::summarise(meanAccuracy = mean (Accuracy), sdAccuracy = sd (Accuracy),seAccuracy = sd(Accuracy) / sqrt(length(Accuracy)))
+
+```
+
+
+### Here we will visualize the descriptive results of accuracy and reaction time for gender and number 
+```{r}
+#summary of the data frame 
+summary(behav_sub)
+
+##Plot Accuracy
+acc_plot<-Accuracy_behav%>%
+  ggplot(aes(x= Num_Gen,y= meanAccuracy, fill = Agreement))+geom_bar(stat="identity", position="dodge")+geom_errorbar(aes(ymin=meanAccuracy-seAccuracy, ymax=meanAccuracy + seAccuracy),width=.6, position=position_dodge(.9))+xlab("Condition")+ylab("Proportion of acceptance")+ geom_text(aes(label = paste(format(meanAccuracy, nsmall = 2), "")), vjust = 2, position = position_dodge(.9))+ ggtitle("Acceptance")+ geom_text(aes(label = paste(format(sdAccuracy, nsmall = 1) ,"SD")), vjust = 3.5, position = position_dodge(.9))
+
+##Plot Reaction time 
+rt_plot<-RT_behav%>%
+  ggplot(aes(x= Num_Gen,y= meanRT, fill = Agreement))+geom_bar(stat="identity", position="dodge")+geom_errorbar(aes(ymin=meanRT-seRT, ymax=meanRT + seRT),width=.6, position=position_dodge(.9))+xlab("Condition")+ylab("Reaction Time")+ geom_text(aes(label=  paste(format(meanRT, nsmall = 2), "ms")), vjust = 2, position = position_dodge(.9))+ ggtitle("RT")+ geom_text(aes(label = paste(format(sdRT, nsmall = 1) ,"SD")), vjust = 3.5, position = position_dodge(.9))
+
+#Combine two plots
+
+fig1<-ggarrange(acc_plot,rt_plot,
+                    ncol = 1, nrow = 2,
+           common.legend = TRUE, legend = "right"
+          )
+
+ggsave(filename = "Figure1",device='jpeg', dpi=300)
+```
+
+## Gender and Number behavioural analysis 
+We will now run glmer for accuracy and lmer for reaction time data with Num_Gen (Gender,Number), Agreement (agreement,non-agreement), Composite score on the LSBQ (higher values indicate more exposure to NN), Group (non-native NN, native NN)
+
+#### Accuracy Analysis 
+```{r}
+##Accuracy Run Analysis## 
+
+#First we will run a glmer model to do some model diagnostic 
+b1<-glmer(Accuracy~Agreement*Num_Gen*composite_c*Group+(Agreement+Num_Gen|Subject),data=behav_sub,family='binomial',control = glmerControl(optimizer = "bobyqa"))
+summary(b1)
+
+#model diagnostic
+sjPlot::plot_model(b1, type='diag')#looks good 
+
+#run LRT with afex package with the new outlier removed data  
+library(afex)
+b2<-mixed(Accuracy~Agreement*Num_Gen*composite_c*Group+(Agreement+Num_Gen|Subject),data=behav_sub,family='binomial',control = glmerControl(optimizer = "bobyqa"), method = "LRT")
+b2#ANOVA table
+summary(b2)#summary 
+
+library(emmeans)
+#post-hoc comparisons to see the effect of Agreement differences between Number and Gender
+con3<-emmeans(b2, ~ Agreement*Num_Gen, test = "Tukey")
+contrast(con3, interaction ="pairwise")
+
+#post-hoc comparisons to see the effect of Agreement on Number and Gender separately
+con4<-emmeans(b2, ~ Agreement|Num_Gen, test = "Tukey")
+contrast(con4, interaction ="pairwise")
+
+######VISUALIZATION######### 
+#plot model for the significant 2 way-interaction
+sjPlot::plot_model(b1, type = "pred", terms = c( "Num_Gen","Agreement"))
+#plot model for the 4 way-interaction
+sjPlot::plot_model(b1, type = "pred", terms = c("composite_c", "Agreement", "Group","Num_Gen"))
+
+
+
+```               
+                  
+#### Reaction Time Analysis 
+```{r}
+##Reaction Time Analysis## 
+
+#First we will run a glmer model to do some model diagnostic 
+r1<-lmer(RT_log~Agreement*Num_Gen*composite_c*Group+(Agreement+Num_Gen|Subject),data=behav_sub)
+summary(r1)
+
+#model diagnostic
+sjPlot::plot_model(r1, type='diag')#looks very good 
+
+#run LRT with afex package with the new outlier removed data  
+library(afex)
+r2<-mixed(RT_log~Agreement*Num_Gen*composite_c*Group+(Agreement+Num_Gen|Subject),data=behav_sub,method = "LRT")
+r2#ANOVA table
+summary(r2)#summary 
+
+library(emmeans)
+#post-hoc comparisons to see the effect of Agreement differences between Number and Gender
+con5<-emmeans(r2, ~ Agreement*Num_Gen, test = "Tukey")
+contrast(con5, interaction ="pairwise")
+
+#post-hoc comparisons to see the effect of Agreement on Number and Gender separately
+con6<-emmeans(r2, ~ Agreement|Num_Gen, test = "Tukey")
+contrast(con6, interaction ="pairwise")
+
+######VISUALIZATION######### 
+#plot model for the significant 2 way-interaction
+sjPlot::plot_model(r1, type = "pred", terms = c( "Num_Gen","Agreement"))
+#plot model for the 4 way-interaction
+sjPlot::plot_model(r1, type = "pred", terms = c("composite_c", "Agreement", "Group","Num_Gen"))
+
+
+```  
+#### We will now make the ERP plots
+
+```{r}
+
+#Import data and bind all conditions together
+#Agrregated Results
+NumGr <- read.delim("GA_NumGr_All_Raw Data.txt", header = FALSE, sep = " ", dec = ".")
+NumGr$Condition="NumGr"
+NumUg <- read.delim("GA_NumUg_All_Raw Data.txt", header = FALSE, sep = " ", dec = ".")
+NumUg$Condition="NumUg"
+GenGr <- read.delim("GA_GenGr_All_Raw Data.txt", header = FALSE, sep = " ", dec = ".")
+GenGr$Condition="GenGr"
+GenUg <- read.delim("GA_GenUg_All_Raw Data.txt", header = FALSE, sep = " ", dec = ".")
+GenUg$Condition="GenUg"
+
+#Aggregated results split by Native vs. Non-native
+NN_GenAgr <- read.delim("AvgGenGr_NNN.txt", header = FALSE, sep = ";", dec = ".")
+NN_GenAgr$Agreement="agreement"
+NN_GenAgr$Nativeness="Native-NN"
+nonNN_GenAgr <- read.delim("AvgGenGr_nonNNN.txt", header = FALSE, sep = ";", dec = ".")
+nonNN_GenAgr$Agreement="agreement"
+nonNN_GenAgr$Nativeness="nonNative-NN"
+NN_GennonAgr <- read.delim("AvgGenUg_NNN.txt", header = FALSE, sep = ";", dec = ".")
+NN_GennonAgr$Agreement="non-agreement"
+NN_GennonAgr$Nativeness="Native-NN"
+nonNN_GennonAgr <- read.delim("AvgGenUg_nonNNN.txt", header = FALSE, sep = ";", dec = ".")
+nonNN_GennonAgr$Agreement="non-agreement"
+nonNN_GennonAgr$Nativeness="nonNative-NN"
+NN_NumnonAgr <- read.delim("AvgNumGr_NNN.txt", header = FALSE, sep = ";", dec = ".")
+NN_NumnonAgr$Agreement="non-agreement"
+NN_NumnonAgr$Nativeness="Native-NN"
+nonNN_NumnonAgr <- read.delim("AvgNumGr_nonNNN.txt", header = FALSE, sep = ";", dec = ".")
+nonNN_NumnonAgr$Agreement="non-agreement"
+nonNN_NumnonAgr$Nativeness="nonNative-NN"
+NN_NumAgr<- read.delim("AvgNumUg_NNN.txt", header = FALSE, sep = ";", dec = ".")
+NN_NumAgr$Agreement="agreement"
+NN_NumAgr$Nativeness="Native-NN"
+nonNN_NumAgr <- read.delim("AvgNumUg_nonNNN.txt", header = FALSE, sep = ";", dec = ".")
+nonNN_NumAgr$Agreement="agreement"
+nonNN_NumAgr$Nativeness="nonNative-NN"
+#rbind all variables
+AllCond = rbind(NumGr,NumUg,GenGr,GenUg)
+Nativeness_gen = rbind(NN_GenAgr,nonNN_GenAgr, NN_GennonAgr,nonNN_GennonAgr)
+Nativeness_num = rbind(NN_NumnonAgr,nonNN_NumnonAgr,NN_NumAgr,nonNN_NumAgr )
+
+# exclude electrodes of no interest
+exclude = c("Fp1", "Fp2", "TP9", "TP10", "C3", "C4", "FCz", "FT9", "FT10", "Fp", "O1", "O2", "T7", "T8","x_dir","y_dir","z_dir")
+AllCond<-AllCond%>%
+  filter(!V1 %in% exclude)
+
+Nativeness_gen<-Nativeness_gen%>%
+  filter(!V1 %in% exclude)
+
+Nativeness_num<-Nativeness_num%>%
+  filter(!V1 %in% exclude)
+
+#create a vector with numbers from -298 to 1200 with an increment step of 2 - this will be our time column
+timepoints <- seq(-298, 1200, by=2)
+AllCond <- AllCond[, -c(2,3,4,5)]
+
+#rename columns
+names(AllCond)[2:751] <- timepoints
+names(AllCond)[1] <- 'Electrode'
+names(Nativeness_gen)[2:751] <- timepoints
+names(Nativeness_gen)[1] <- 'Electrode'
+names(Nativeness_num)[2:751] <- timepoints
+names(Nativeness_num)[1] <- 'Electrode'
+# transpose wide to long
+AllCond_long <- AllCond%>%
+gather(key = Time, value = Amplitude,`-298`:`1200`)
+
+Nativeness_gen_long <-Nativeness_gen%>%
+gather(key = Time, value = Amplitude,`-298`:`1200`)
+
+Nativeness_num_long <-Nativeness_num%>%
+gather(key = Time, value = Amplitude,`-298`:`1200`)
+colnames(Nativeness_num_long )
+```
+
+
+```{r}
+#######AGGREGATE########
+#prepare the aggregate number conditions and electrode Pz for plotting
+Num_Pz<-AllCond_long%>%
+  filter(Electrode=="Pz"& (Condition=="NumGr"|Condition=="NumUg"))
+
+Num_Pz$Time <- as.numeric(as.vector(Num_Pz$Time))
+Num_Pz.plot <- ggplot(data=Num_Pz, aes(x=Time, y=Amplitude, group=Condition)) +
+  geom_line(aes(color=Condition))+
+  scale_color_brewer(palette = "Set1")+
+  theme_classic()+
+  geom_vline(xintercept = 0,linetype = "dashed" )+
+  geom_hline(yintercept = 0,linetype = "dashed")+
+  scale_x_continuous(breaks=seq(-300,1200,300))+
+  scale_color_manual(labels = c("Agreement", "Non-Agreement"), values = c("blue", "red"))+
+  labs(x = "Time (ms)",y = expression(paste("Amplitude (",mu,"V)")))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=16),
+        legend.text=element_text(size=12),
+        legend.position="bottom")+
+  ggtitle("Panel B: Number")+
+  ylim(-5,5)
+
+
+#prepare the aggregate gender condition and electrode Pz for plotting
+Gen_Pz<-AllCond_long%>%
+  filter(Electrode=="Pz"& (Condition=="GenGr"|Condition=="GenUg"))
+
+Gen_Pz$Time <- as.numeric(as.vector(Gen_Pz$Time))
+Gen_Pz.plot <- ggplot(data=Gen_Pz, aes(x=Time, y=Amplitude, group=Condition)) +
+  geom_line(aes(color=Condition))+
+  scale_color_brewer(palette = "Set1")+
+  theme_classic()+
+  geom_vline(xintercept = 0,linetype = "dashed" )+
+  geom_hline(yintercept = 0,linetype = "dashed")+
+  scale_x_continuous(breaks=seq(-300,1200,300))+  
+  scale_color_manual(labels = c("Agreement", "Non-Agreement"), values = c("blue", "red"))+
+  labs(x = "Time (ms)",y = expression(paste("Amplitude (",mu,"V)")))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=16),
+        legend.text=element_text(size=12),
+        legend.position="bottom")+
+  ggtitle("Panel A: Gender")+
+  ylim(-5,5)
+
+#Combine two plots
+ggarrange(Gen_Pz.plot ,Num_Pz.plot ,
+                    ncol = 1, nrow = 2,
+           common.legend = TRUE, legend = "right"
+          )
+  
+#######NATIVE vs. NON-NATIVE for Gender and Number##############
+#prepare the aggregate number conditions and electrode Pz for plotting
+Gen_Nat_Pz<-Nativeness_gen_long %>%
+  filter(Electrode=="Pz")%>%
+  mutate(Nativeness = str_replace(Nativeness, "-NN", ""))
+
+Gen_Nat_Pz$Time <- as.numeric(as.vector(Gen_Nat_Pz$Time))
+Gen_Nat_Pz.plot <- ggplot(data=Gen_Nat_Pz, aes(x=Time, y=Amplitude, group=Agreement)) +
+  geom_line(aes(color=Agreement))+
+  scale_color_brewer(palette = "Set1")+
+  theme_classic()+
+  geom_vline(xintercept = 0,linetype = "dashed" )+
+  geom_hline(yintercept = 0,linetype = "dashed")+
+  scale_x_continuous(breaks=seq(-300,1200,300))+
+  scale_color_manual(labels = c("Agreement", "Non-Agreement"), values = c("blue", "red"))+
+  labs(x = "Time (ms)",y = expression(paste("Amplitude (",mu,"V)")))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=16),
+        legend.text=element_text(size=12),
+        legend.position="bottom")+
+  facet_grid(rows = vars(Nativeness))+
+  ggtitle("ERP waveplot of Gender condition split by Nativeness")
+
+#prepare the aggregate gender condition and electrode Pz for plotting
+Num_Nat_Pz<-Nativeness_num_long%>%
+  filter(Electrode=="Pz")%>%
+  mutate(Nativeness = str_replace(Nativeness, "-NN", ""))
+
+Num_Nat_Pz$Time <- as.numeric(as.vector(Num_Nat_Pz$Time))
+Num_Nat_Pz.plot <- ggplot(data=Num_Nat_Pz, aes(x=Time, y=Amplitude, group=Agreement)) +
+  geom_line(aes(color=Agreement))+
+  scale_color_brewer(palette = "Set1")+
+  theme_classic()+
+  geom_vline(xintercept = 0,linetype = "dashed" )+
+  geom_hline(yintercept = 0,linetype = "dashed")+
+  scale_x_continuous(breaks=seq(-300,1200,300))+  
+  scale_color_manual(labels = c("Agreement", "Non-Agreement"), values = c("blue", "red"))+
+  labs(x = "Time (ms)",y = expression(paste("Amplitude (",mu,"V)")))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=16),
+        legend.text=element_text(size=12),
+        legend.position="bottom")+
+  facet_grid(rows = vars(Nativeness))+
+  ggtitle("ERP waveplot of Number condition split by Nativeness")
+
+#Combine two plots
+fig2<-ggarrange(Gen_Nat_Pz.plot ,Num_Nat_Pz.plot  ,
+                    ncol = 1, nrow = 2,
+           common.legend = TRUE, legend = "right"
+          )
+
+ggsave(filename = "Figure2",device='jpeg', dpi=300)
+```
+
+
+
+
+
+#### Now we will check to see the correlation between behavioural (accuracy) and ERP data 
+```{r}
+#aggregate individual ERP data 
+erp_ind<-erp_all_3%>%
+  dplyr::group_by(Subject,Num_Gen,Agreement)%>%
+  dplyr::summarise(meanamp = mean(Amplitude))%>%
+  spread(Agreement,meanamp)%>%
+  mutate(diff_amp = `non-agreement` - agreement)%>%
+  select(Subject, Num_Gen, diff_amp)
+
+#aggregate individual acceptance data 
+behav_ind<-behav_sub%>%
+  dplyr::group_by(Subject,Num_Gen,Agreement)%>%
+  dplyr::summarise(meanacc = mean(Accuracy))%>%
+  spread(Agreement,meanacc)%>%
+  mutate(diff_acc = `non-agreement` - agreement)%>%
+  select(Subject, Num_Gen, diff_acc)
+
+
+#merge two data sets 
+ind_data<-merge(erp_ind,behav_ind, by = c("Subject","Num_Gen"))
+
+#subset for gender 
+ind_gender<-ind_data%>%
+  filter(Num_Gen == "gender")
+
+#subset for number
+ind_number<-ind_data%>%
+  filter(Num_Gen == "number")
+
+#run correlation for gender
+cor.test(ind_gender$diff_amp,ind_gender$diff_acc)
+
+#run correlation for number 
+cor.test(ind_number$diff_amp,ind_number$diff_acc)
+
+```
+
+
+
+
+
